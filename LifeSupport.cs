@@ -1,27 +1,24 @@
-using System;
-using System.Collections.Generic;
-using Oxide.Core.Plugins;
-using Oxide.Core;
 using Newtonsoft.Json;
 using Oxide.Core.Libraries.Covalence;
-
+using Oxide.Core.Plugins;
+using Oxide.Core;
+using System.Collections.Generic;
+using System;
 
 namespace Oxide.Plugins
 {
-    [Info("Life Support", "OG61", "1.1.6")]
+    [Info("Life Support", "OG61", "1.1.12")]
     [Description("Use reward points to prevent player from dying")]
     public class LifeSupport : CovalencePlugin
     {
         #region Plugin References
-        [PluginReference]
-        private Plugin ServerRewards;
-        [PluginReference]
-        private Plugin RaidableBases;
-   
+        [PluginReference] private Plugin RaidableBases, ServerRewards;
         
         #endregion
 
         #region Config
+        private const string PERMISSION_BLOCKED = "lifesupport.blocked";
+
         private class Perms
         {
             public string Permission { get; set; }
@@ -45,7 +42,7 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Permissions and cost", ObjectCreationHandling = ObjectCreationHandling.Replace)]
             public List<Perms> perms = new List<Perms>()
-            { 
+            {
                 new Perms() {Permission = "lifesupport.default", Cost = 400 },
                 new Perms() {Permission = "lifesupport.vip", Cost = 200},
                 new Perms() {Permission = "lifesupport.admin", Cost = 0}
@@ -77,6 +74,41 @@ namespace Oxide.Plugins
         protected override void LoadDefaultConfig() => config = new PluginConfig();
 
         protected override void SaveConfig() => Config.WriteObject(config);
+
+        private void OnPluginLoaded(Plugin plugin)
+        {
+            switch (plugin.Title)
+            {
+                case "RaidableBases":
+                    {
+                        RaidableBases = plugin;
+                        break;
+                    }
+                case "ServerRewards":
+                    {
+                        ServerRewards = plugin;
+                        break;
+                    }
+            }
+        }
+
+        private void OnPluginUnloaded(Plugin plugin)
+        {
+            switch (plugin.Title)
+            {
+                case "RaidableBases":
+                    {
+                        RaidableBases = null;
+                        break;
+                    }
+                case "ServerRewards":
+                    {
+                        ServerRewards = null;
+                        break;
+                    }
+            }
+        }
+
         #endregion //Config
 
         #region Data
@@ -99,20 +131,29 @@ namespace Oxide.Plugins
             {
                     permission.RegisterPermission(p.Permission, this);
             });
+            permission.RegisterPermission(PERMISSION_BLOCKED, this);
         }
         
         //Prevent player from entering wounded state
         private object OnPlayerWound(BasePlayer player)
         {
            if (player == null) return null;
-           if (config.UseRaidableBases && (RaidableBases?.Call<bool>("EventTerritory", player.transform.position) ?? false)) return null;
+           if (permission.UserHasPermission(player.UserIDString, PERMISSION_BLOCKED)) return null;
+           if (config.UseRaidableBases)
+           {
+               if (RaidableBases != null && RaidableBases.IsLoaded)
+               {
+                    if (RaidableBases.Call<bool>("EventTerritory", player.transform.position))
+                        return null;
+               }
+           }
             
            bool preventWounded = false;
             
            config.perms.ForEach(p =>
             {
-                 if (permission.UserHasPermission(player.IPlayer.Id, p.Permission)&&
-                     data.activatedIDs.Contains(player.IPlayer.Id)) 
+                 if (permission.UserHasPermission(player.UserIDString, p.Permission)&&
+                     data.activatedIDs.Contains(player.UserIDString)) 
                 {
                     preventWounded = true;
                 }
@@ -123,15 +164,24 @@ namespace Oxide.Plugins
        
         private object OnPlayerDeath(BasePlayer player, HitInfo hitInfo)
         {
+            if (player == null || player.IsNpc) return null;
+            if (permission.UserHasPermission(player.UserIDString, PERMISSION_BLOCKED)) return null;
+
             bool preventDeath = false;
             int costOfLife = int.MaxValue;
-            if (player.IsNpc  || player == null) return null;
-            if (config.UseRaidableBases && (RaidableBases?.Call<bool>("EventTerritory", player.transform.position) ?? false)) return null;
-            if (data.activatedIDs.Contains(player.IPlayer.Id))
+            if (config.UseRaidableBases)
+            {
+                if (RaidableBases != null && RaidableBases.IsLoaded)
+                {
+                    if (RaidableBases.Call<bool>("EventTerritory", player.transform.position))
+                        return null;                    
+                }
+            }
+            if (data.activatedIDs.Contains(player.UserIDString))
             {
                 config.perms.ForEach(p => 
                 {
-                    if (permission.UserHasPermission(player.IPlayer.Id, p.Permission))
+                    if (permission.UserHasPermission(player.UserIDString, p.Permission))
                     {
                         preventDeath = true;
                         if (p.Cost < costOfLife) costOfLife = p.Cost;
@@ -147,9 +197,10 @@ namespace Oxide.Plugins
                         Logger("ServerRewardsNull");
                         return null;
                     }
-                    if (ServerRewards.Call<int>("CheckPoints", player.IPlayer.Id) >= costOfLife)
+                    var rp = ServerRewards.Call("CheckPoints", player.UserIDString);
+                    if ((rp is int ? (int)rp : (int)0) >= costOfLife)
                     {
-                        ServerRewards.Call<bool>("TakePoints", player.IPlayer.Id, costOfLife);
+                        ServerRewards.Call("TakePoints", player.UserIDString, costOfLife);
                     }
                     else
                     {
@@ -169,24 +220,30 @@ namespace Oxide.Plugins
                 if (player.IsWounded()) player.StopWounded();
                 return true;
             }
-			Logger("DiedNotActive", player.IPlayer);
+            Logger("DiedNotActive", player.IPlayer);
             return null; //Life Support not activated for this player so exit
         }
 
         bool CanDropActiveItem(BasePlayer player)
         {
-            if (player == null) return true;
+            try
+            {
+                if (player == null || player.IsNpc) return true;
 
-            if (config.UseRaidableBases)
-            {
-                if (RaidableBases == null || !RaidableBases.IsLoaded) return true;
-            {
-                if (RaidableBases == null || !RaidableBases.IsLoaded) return true;
-                if (RaidableBases?.Call<bool>("EventTerritory", player.transform.position) ?? false) return true;
+                if (config.UseRaidableBases)
+                {
+                    if (RaidableBases != null && RaidableBases.IsLoaded)
+                    {
+                        if (RaidableBases.Call<bool>("EventTerritory", player.transform.position)) return true;
+                    }
+                }
+                return data.activatedIDs.Contains(player.UserIDString) ? false : true;
             }
-            return data.activatedIDs.Contains(player.IPlayer.Id) ? false : true;
-        }
-            return data.activatedIDs.Contains(player.IPlayer.Id) ? false : true;
+            catch (System.Exception ex)
+            {
+                Puts("CanDropActiveItem trew Exception: " + ex) ;
+                throw;
+            }
         }
 
 
@@ -211,7 +268,10 @@ namespace Oxide.Plugins
 
         private void Message(string key, IPlayer player, params object[] args)
         {
-           player.Reply(GetLang(key, player.Id, args));
+            if (player != null)
+            {
+                player.Reply(GetLang(key, player.Id, args));
+            }
         }
 
         #endregion //Helpers
@@ -220,6 +280,11 @@ namespace Oxide.Plugins
         [Command("lifesupport")]
         private void SaveLife(IPlayer player, string msg, string[] args)
         {
+            if (permission.UserHasPermission(player.Id, PERMISSION_BLOCKED))
+            {
+                Message("NoPermission", player);
+                return;
+            }
             int costOfLife = int.MaxValue;
             bool hasPermission = false;
 
