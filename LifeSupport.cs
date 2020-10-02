@@ -7,7 +7,7 @@ using System;
 
 namespace Oxide.Plugins
 {
-    [Info("Life Support", "OG61", "1.1.12")]
+    [Info("Life Support", "OG61", "1.1.13")]
     [Description("Use reward points to prevent player from dying")]
     public class LifeSupport : CovalencePlugin
     {
@@ -191,22 +191,24 @@ namespace Oxide.Plugins
                 if (config.UseServerRewards)
                 {
                     if (ServerRewards == null || !ServerRewards.IsLoaded)
-                    {
-                        //Server Rewards enabled but not present. Log error and return
+                    {//Server Rewards enabled but not present. Log error and return
                         Message("ServerRewardsNull", player.IPlayer);
                         Logger("ServerRewardsNull");
                         return null;
                     }
-                    var rp = ServerRewards.Call("CheckPoints", player.UserIDString);
-                    if ((rp is int ? (int)rp : (int)0) >= costOfLife)
-                    {
-                        ServerRewards.Call("TakePoints", player.UserIDString, costOfLife);
-                    }
-                    else
-                    {
-                        Message("CantAfford", player.IPlayer);
-                        Logger("DiedCouldntAfford", player.IPlayer);
-                        return null; //Player can't afford so exit
+                    if (costOfLife > 0)
+                    {//object object CheckPoints(ulong ID) // Returns int, or null if no data is saved
+                        var rp = ServerRewards.Call("CheckPoints", player.userID);
+                        if((rp is int ? (int)rp : 0) >= costOfLife)
+                        {
+                            ServerRewards.Call("TakePoints", player.UserIDString, costOfLife);
+                        }
+                        else
+                        {
+                            Message("CantAfford", player.IPlayer);
+                            Logger("DiedCouldntAfford", player.IPlayer);
+                            return null; //Player can't afford so exit
+                        }
                     }
                     Message("SavedYourLifeCost", player.IPlayer, costOfLife);
                     Logger("SavedLife", player.IPlayer, costOfLife);
@@ -245,7 +247,6 @@ namespace Oxide.Plugins
                 throw;
             }
         }
-
 
         #endregion //Oxide Hooks  
 
